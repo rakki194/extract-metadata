@@ -21,7 +21,7 @@ cargo install extract-metadata
 Or build from source:
 
 ```bash
-git clone [repository-url]
+git clone https://github.com/rakki194/extract-metadata
 cd extract-metadata
 cargo build --release
 ```
