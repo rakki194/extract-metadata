@@ -53,6 +53,7 @@ mod tests {
     use super::*;
     use tokio::fs::{self, File};
     use tokio::io::AsyncWriteExt;
+    use tokio::time::{sleep, Duration};
 
     async fn create_dummy_safetensors(path: &Path) -> anyhow::Result<()> {
         let dir = path.parent().unwrap();
@@ -64,6 +65,11 @@ mod tests {
         let mut header_bytes = header_len.to_le_bytes().to_vec();
         header_bytes.extend(header.as_bytes());
         file.write_all(&header_bytes).await?;
+        file.flush().await?;
+        // Drop the file handle explicitly
+        drop(file);
+        // Small delay to ensure filesystem operations complete
+        sleep(Duration::from_millis(50)).await;
         Ok(())
     }
 
@@ -74,6 +80,9 @@ mod tests {
         create_dummy_safetensors(&file_path).await?;
         
         let result = process_safetensors_file(&file_path).await;
+        if result.is_err() {
+            eprintln!("Error processing file: {:?}", result);
+        }
         assert!(result.is_ok());
         Ok(())
     }
