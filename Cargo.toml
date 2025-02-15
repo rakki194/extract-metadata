@@ -3,6 +3,9 @@ name = "extract-metadata"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+description = "A tool to extract metadata from .safetensors files in a target directory and its subdirectories."
+documentation = "https://docs.rs/extract-metadata"
+repository = "https://github.com/rakki194/extract-metadata"
 
 [dependencies]
 xio = { path = "../xio", version = "0.1.2" }
