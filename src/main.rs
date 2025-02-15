@@ -47,3 +47,85 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use tokio::fs::{self, File};
+    use tokio::io::AsyncWriteExt;
+
+    async fn create_dummy_safetensors(path: &Path) -> anyhow::Result<()> {
+        let dir = path.parent().unwrap();
+        fs::create_dir_all(dir).await?;
+        let mut file = File::create(path).await?;
+        // Write a minimal valid safetensors header
+        let header = r#"{"__metadata__":{"foo":"bar"}}"#;
+        let header_len = header.len() as u64;
+        let mut header_bytes = header_len.to_le_bytes().to_vec();
+        header_bytes.extend(header.as_bytes());
+        file.write_all(&header_bytes).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_process_single_file() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let file_path = temp_dir.path().join("test.safetensors");
+        create_dummy_safetensors(&file_path).await?;
+        
+        let result = process_safetensors_file(&file_path).await;
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_process_directory() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let file1 = temp_dir.path().join("test1.safetensors");
+        let file2 = temp_dir.path().join("subdir").join("test2.safetensors");
+        
+        create_dummy_safetensors(&file1).await?;
+        create_dummy_safetensors(&file2).await?;
+
+        let result = walk_directory(temp_dir.path(), "safetensors", |file_path| {
+            let path_buf = file_path.to_path_buf();
+            async move { process_safetensors_file(&path_buf).await }
+        }).await;
+        
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_invalid_path() -> anyhow::Result<()> {
+        let invalid_path = Path::new("nonexistent.safetensors");
+        let result = process_safetensors_file(invalid_path).await;
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_glob_pattern() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let file1 = temp_dir.path().join("test1.safetensors");
+        let file2 = temp_dir.path().join("test2.safetensors");
+        
+        create_dummy_safetensors(&file1).await?;
+        create_dummy_safetensors(&file2).await?;
+
+        let pattern = temp_dir.path().join("*.safetensors");
+        let pattern_str = pattern.to_str().unwrap();
+
+        for entry in glob(pattern_str)? {
+            match entry {
+                Ok(path) => {
+                    let result = process_safetensors_file(&path).await;
+                    assert!(result.is_ok());
+                }
+                Err(e) => panic!("Failed to process glob entry: {:?}", e),
+            }
+        }
+        Ok(())
+    }
+}

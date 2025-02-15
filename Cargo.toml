@@ -5,8 +5,8 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-xio = { path = "../xio" }
-dset = { path = "../dset" }
+xio = { path = "../xio", version = "0.1.2" }
+dset = { path = "../dset", version = "0.1.0" }
 anyhow = { version = "1.0.95", features = ["backtrace"] }
 tokio = { version = "1.43.0", features = ["full"] }
 futures = "0.3.31"
