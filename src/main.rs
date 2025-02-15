@@ -51,7 +51,6 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use tokio::fs::{self, File};
     use tokio::io::AsyncWriteExt;
 
