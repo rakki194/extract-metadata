@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok(path) => {
                         process_safetensors_file(&path).await?;
                     }
-                    Err(e) => println!("Error processing entry: {:?}", e),
+                    Err(e) => println!("Error processing entry: {e:?}"),
                 }
             }
         } else {
@@ -131,7 +131,7 @@ mod tests {
                     let result = process_safetensors_file(&path).await;
                     assert!(result.is_ok());
                 }
-                Err(e) => panic!("Failed to process glob entry: {:?}", e),
+                Err(e) => panic!("Failed to process glob entry: {e:?}"),
             }
         }
         Ok(())
