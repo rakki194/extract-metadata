@@ -2,9 +2,56 @@
 
 use dset::{ process_safetensors_file, xio::walk_directory };
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use glob::glob;
 use anyhow::Context;
+
+/// Normalize a path by converting it to absolute and cleaning up any . or .. components
+fn normalize_path(path: &Path) -> anyhow::Result<PathBuf> {
+    // First convert to absolute path if needed
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()?.join(path)
+    };
+    
+    // Try to canonicalize first (this handles symlinks too)
+    match std::fs::canonicalize(&abs_path) {
+        Ok(canonical) => Ok(canonical),
+        Err(e) => {
+            // If canonicalization fails, try to clean up the path manually
+            let mut components = Vec::new();
+            let mut had_error = false;
+            
+            for component in abs_path.components() {
+                match component {
+                    std::path::Component::Prefix(p) => components.push(std::path::Component::Prefix(p)),
+                    std::path::Component::RootDir => components.push(std::path::Component::RootDir),
+                    std::path::Component::Normal(x) => components.push(std::path::Component::Normal(x)),
+                    std::path::Component::CurDir => (), // skip
+                    std::path::Component::ParentDir => {
+                        if components.len() <= 1 {
+                            // Can't go up from root
+                            had_error = true;
+                            break;
+                        }
+                        // Only pop if we have something to pop
+                        if !components.is_empty() {
+                            components.pop();
+                        }
+                    }
+                }
+            }
+            
+            if had_error {
+                // If we had an error in manual cleanup, return the original error
+                Err(e.into())
+            } else {
+                Ok(components.iter().collect())
+            }
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -16,25 +63,45 @@ async fn main() -> anyhow::Result<()> {
         println!("Usage: {} <filename or directory>", args[0]);
         return Ok(());
     }
-    let path = Path::new(&args[1]);
+    
+    let path = normalize_path(Path::new(&args[1]))?;
 
     if path.is_dir() {
-        walk_directory(path, "safetensors", |file_path| {
-            let path_buf = file_path.to_path_buf();
-            async move { process_safetensors_file(&path_buf).await }
+        walk_directory(&path, "safetensors", |file_path| {
+            let path_buf = match normalize_path(file_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Warning: Failed to normalize path {}: {}", file_path.display(), e);
+                    file_path.to_path_buf()
+                }
+            };
+            async move {
+                match process_safetensors_file(&path_buf).await {
+                    Ok(_) => Ok(()),
+                    Err(e) => {
+                        eprintln!("Warning: Failed to process file {}: {}", path_buf.display(), e);
+                        Ok(()) // Continue processing other files
+                    }
+                }
+            }
         }).await?;
     } else if let Some(path_str) = path.to_str() {
         if path_str.contains('*') {
             for entry in glob(path_str).context("Failed to read glob pattern")? {
                 match entry {
                     Ok(path) => {
-                        process_safetensors_file(&path).await?;
+                        let abs_path = normalize_path(&path).unwrap_or(path);
+                        if let Err(e) = process_safetensors_file(&abs_path).await {
+                            eprintln!("Warning: Failed to process file {}: {}", abs_path.display(), e);
+                        }
                     }
                     Err(e) => println!("Error processing entry: {e:?}"),
                 }
             }
         } else {
-            process_safetensors_file(path).await?;
+            if let Err(e) = process_safetensors_file(&path).await {
+                eprintln!("Warning: Failed to process file {}: {}", path.display(), e);
+            }
         }
     } else {
         return Err(anyhow::anyhow!("Invalid path provided"));
@@ -193,6 +260,62 @@ mod tests {
 
         // Only one file should match the glob pattern
         assert_eq!(glob_processed, 1);
+        
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_relative_paths() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let subdir = temp_dir.path().join("subdir");
+        let file_path = subdir.join("test.safetensors");
+        
+        create_dummy_safetensors(&file_path).await?;
+        
+        // Change to the temp directory to test relative paths
+        let original_dir = env::current_dir()?;
+        env::set_current_dir(temp_dir.path())?;
+
+        // Test with relative path
+        let result = walk_directory(Path::new("."), "safetensors", move |file_path| {
+            let path_buf = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+            async move { process_safetensors_file(&path_buf).await }
+        }).await;
+        assert!(result.is_ok());
+
+        // Test with absolute path
+        let result = walk_directory(temp_dir.path(), "safetensors", move |file_path| {
+            let path_buf = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+            async move { process_safetensors_file(&path_buf).await }
+        }).await;
+        assert!(result.is_ok());
+
+        // Test with mixed paths (some relative, some absolute)
+        let mixed_dir = temp_dir.path().join("mixed");
+        fs::create_dir_all(&mixed_dir).await?;
+        let abs_file = mixed_dir.join("abs.safetensors");
+        let rel_file = mixed_dir.join("rel.safetensors");
+        
+        create_dummy_safetensors(&abs_file).await?;
+        create_dummy_safetensors(&rel_file).await?;
+
+        let processed_files = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let processed_files_clone = processed_files.clone();
+
+        let result = walk_directory(&mixed_dir, "safetensors", move |file_path| {
+            let processed_files = processed_files_clone.clone();
+            let path_buf = std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf());
+            async move {
+                processed_files.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                process_safetensors_file(&path_buf).await
+            }
+        }).await;
+
+        assert!(result.is_ok());
+        assert_eq!(processed_files.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        // Restore original directory
+        env::set_current_dir(original_dir)?;
         
         Ok(())
     }
