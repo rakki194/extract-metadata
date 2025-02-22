@@ -11,8 +11,8 @@ keywords = ["metadata", "safetensors", "machine-learning", "cli", "batch"]
 categories = ["command-line-utilities", "development-tools", "science::ml"]
 
 [dependencies]
-xio = { path = "../xio", version = "0.1.3" }
-dset = { path = "../dset", version = "0.1.3" }
+xio = { version = "0.1.4" }
+dset = { version = "0.1.4" }
 anyhow = { version = "1.0.96", features = ["backtrace"] }
 tokio = { version = "1.43.0", features = ["full"] }
 futures = "0.3.31"
