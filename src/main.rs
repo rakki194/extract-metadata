@@ -68,6 +68,17 @@ mod tests {
         Ok(())
     }
 
+    async fn create_dummy_file(path: &Path, content: &str) -> anyhow::Result<()> {
+        let dir = path.parent().unwrap();
+        fs::create_dir_all(dir).await?;
+        let mut file = File::create(path).await?;
+        file.write_all(content.as_bytes()).await?;
+        file.flush().await?;
+        drop(file);
+        sleep(Duration::from_millis(50)).await;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_process_single_file() -> anyhow::Result<()> {
         let temp_dir = tempfile::tempdir()?;
@@ -129,6 +140,60 @@ mod tests {
                 Err(e) => panic!("Failed to process glob entry: {e:?}"),
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_only_process_safetensors() -> anyhow::Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        
+        // Create various file types
+        let safetensors_file = temp_dir.path().join("model.safetensors");
+        let toml_file = temp_dir.path().join("config.toml");
+        let txt_file = temp_dir.path().join("readme.txt");
+        let fake_safetensors = temp_dir.path().join("fake.safetensors.txt");
+
+        create_dummy_safetensors(&safetensors_file).await?;
+        create_dummy_file(&toml_file, "[config]\nkey = 'value'").await?;
+        create_dummy_file(&txt_file, "This is a text file").await?;
+        create_dummy_file(&fake_safetensors, "Not a real safetensors file").await?;
+
+        // Test directory walking
+        let processed_files = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let processed_files_clone = processed_files.clone();
+
+        let result = walk_directory(temp_dir.path(), "safetensors", move |file_path| {
+            let processed_files = processed_files_clone.clone();
+            let path_buf = file_path.to_path_buf();
+            async move {
+                processed_files.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                process_safetensors_file(&path_buf).await
+            }
+        }).await;
+
+        assert!(result.is_ok());
+        // Only one file should have been processed (the real safetensors file)
+        assert_eq!(processed_files.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        // Test glob pattern
+        let pattern = temp_dir.path().join("*.safetensors");
+        let pattern_str = pattern.to_str().unwrap();
+        let mut glob_processed = 0;
+
+        for entry in glob(pattern_str)? {
+            match entry {
+                Ok(path) => {
+                    let result = process_safetensors_file(&path).await;
+                    assert!(result.is_ok());
+                    glob_processed += 1;
+                }
+                Err(e) => panic!("Failed to process glob entry: {e:?}"),
+            }
+        }
+
+        // Only one file should match the glob pattern
+        assert_eq!(glob_processed, 1);
+        
         Ok(())
     }
 }
